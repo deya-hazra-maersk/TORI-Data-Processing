@@ -1,0 +1,8 @@
+# TORI Data Processing Dependencies
+# For GitHub Actions workflow
+
+requests
+pandas
+pyodbc
+sqlalchemy
+urllib3

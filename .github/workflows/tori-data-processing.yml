@@ -1,0 +1,256 @@
+# name: TORI Data Processing
+
+# on:
+#   schedule:
+#     # Runs daily at 8:00 AM UTC (you can adjust this time)
+#     - cron: '0 8 * * *'
+#   workflow_dispatch: # Allows manual triggering
+
+# jobs:
+#   process-tori-data:
+#     runs-on: ubuntu-latest
+    
+#     steps:
+#     - name: Checkout repository
+#       uses: actions/checkout@v4
+    
+#     - name: Set up Python
+#       uses: actions/setup-python@v4
+#       with:
+#         python-version: '3.9'
+    
+#     - name: Install dependencies
+#       run: |
+#         python -m pip install --upgrade pip
+#         pip install -r requirements.txt
+    
+#     - name: Run TORI data processing
+#       env:
+#         # Azure AD OAuth2 credentials
+#         CLIENT_ID: ${{ secrets.CLIENT_ID }}
+#         CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+#         # Azure SQL Database credentials
+#         AZURE_SQL_SERVER: ${{ secrets.AZURE_SQL_SERVER }}
+#         AZURE_SQL_DATABASE: ${{ secrets.AZURE_SQL_DATABASE }}
+#         AZURE_SQL_USERNAME: ${{ secrets.AZURE_SQL_USERNAME }}
+#         AZURE_SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
+#       run: |
+#         python main.py
+
+
+
+name: TORI Data Processing
+
+on:
+  schedule:
+    # Runs daily at 8:00 AM UTC
+    # Note: GitHub Actions cron may have delays of 5-15 minutes
+    - cron: '0 8 * * *'
+  workflow_dispatch: # Allows manual trigger for testing
+
+env:
+  PYTHON_VERSION: '3.12'  # Use latest stable Python version
+  # Environment variables organized at workflow level
+  CLIENT_ID: ${{ secrets.CLIENT_ID }}
+  CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+  AZURE_SQL_SERVER: ${{ secrets.AZURE_SQL_SERVER }}
+  AZURE_SQL_DATABASE: ${{ secrets.AZURE_SQL_DATABASE }}
+  AZURE_SQL_USERNAME: ${{ secrets.AZURE_SQL_USERNAME }}
+  AZURE_SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
+
+jobs:
+  process-tori-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # Set job timeout to prevent hanging
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'  # Enable pip caching for faster builds
+    
+    - name: Install dependencies
+      run: |
+        echo "📦 Installing Python dependencies..."
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        echo "✅ Dependencies installed successfully"
+    
+    - name: Configure environment
+      run: |
+        echo "🔧 Verifying environment variables..."
+        echo "CLIENT_ID is set: $([[ -n "$CLIENT_ID" ]] && echo "✅ Yes" || echo "❌ No")"
+        echo "CLIENT_SECRET is set: $([[ -n "$CLIENT_SECRET" ]] && echo "✅ Yes" || echo "❌ No")"
+        echo "AZURE_SQL_SERVER is set: $([[ -n "$AZURE_SQL_SERVER" ]] && echo "✅ Yes" || echo "❌ No")"
+        echo "AZURE_SQL_DATABASE is set: $([[ -n "$AZURE_SQL_DATABASE" ]] && echo "✅ Yes" || echo "❌ No")"
+        echo "AZURE_SQL_USERNAME is set: $([[ -n "$AZURE_SQL_USERNAME" ]] && echo "✅ Yes" || echo "❌ No")"
+        echo "AZURE_SQL_PASSWORD is set: $([[ -n "$AZURE_SQL_PASSWORD" ]] && echo "✅ Yes" || echo "❌ No")"
+        echo "✅ Environment configured"
+    
+    - name: Pre-flight Connection Test
+      id: connection_test
+      timeout-minutes: 5
+      continue-on-error: true  # Don't fail if this optional check fails
+      run: |
+        echo "🔍 Running pre-flight connection tests..."
+        echo "⏰ Started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        python -c "
+        import os
+        import requests
+        import pyodbc
+        
+        # Test OAuth2 endpoint connectivity
+        print('🔗 Testing OAuth2 endpoint connectivity...')
+        try:
+            response = requests.get('https://login.microsoftonline.com/05d75c05-fa1a-42e7-9cf1-eb416c396f2d/.well-known/openid-configuration', timeout=10)
+            print(f'✅ OAuth2 endpoint reachable: {response.status_code}')
+        except Exception as e:
+            print(f'⚠️ OAuth2 endpoint test failed: {e}')
+        
+        # Test TORI API endpoint connectivity  
+        print('🔗 Testing TORI API endpoint connectivity...')
+        try:
+            response = requests.head('https://tori-agent.maersk-digital.net', timeout=10)
+            print(f'✅ TORI API endpoint reachable: {response.status_code}')
+        except Exception as e:
+            print(f'⚠️ TORI API endpoint test failed: {e}')
+        
+        # Test SQL Server connectivity
+        print('🔗 Testing Azure SQL Database connectivity...')
+        try:
+            connection_string = f\"Driver={{ODBC Driver 17 for SQL Server}};Server={os.getenv('AZURE_SQL_SERVER')};Database={os.getenv('AZURE_SQL_DATABASE')};Uid={os.getenv('AZURE_SQL_USERNAME')};Pwd={os.getenv('AZURE_SQL_PASSWORD')};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=10;\"
+            conn = pyodbc.connect(connection_string)
+            conn.close()
+            print('✅ Azure SQL Database connection successful')
+        except Exception as e:
+            print(f'⚠️ Azure SQL Database connection test failed: {e}')
+        "
+        echo "⏰ Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    
+    - name: Step 1 - OAuth2 Authentication
+      id: oauth_auth
+      timeout-minutes: 5
+      run: |
+        echo "🔐 Starting Step 1: OAuth2 Authentication..."
+        echo "⏰ Started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        python -c "
+        import sys
+        sys.path.append('.')
+        from main import get_access_token
+        import logging
+        
+        # Configure logging for GitHub Actions
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        
+        try:
+            print('🔐 Testing OAuth2 authentication...')
+            token = get_access_token()
+            print(f'✅ OAuth2 token obtained (length: {len(token)} characters)')
+            print('✅ Step 1: Authentication completed successfully')
+        except Exception as e:
+            print(f'❌ Step 1: Authentication failed: {str(e)}')
+            sys.exit(1)
+        "
+        echo "⏰ Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    
+    - name: Step 2 - Fetch TORI Data
+      id: fetch_data
+      timeout-minutes: 10
+      run: |
+        echo "📊 Starting Step 2: Fetching TORI data..."
+        echo "⏰ Started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        python -c "
+        import sys
+        sys.path.append('.')
+        from main import fetch_data_from_api
+        import logging
+        
+        # Configure logging for GitHub Actions
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        
+        try:
+            print('📡 Fetching data from TORI API...')
+            csv_data = fetch_data_from_api()
+            data_size = len(csv_data) if csv_data else 0
+            print(f'✅ Data fetched successfully: {data_size:,} characters')
+            
+            # Store data size for next step
+            with open('data_size.txt', 'w') as f:
+                f.write(str(data_size))
+            
+            # Save CSV data for processing step
+            with open('tori_data.csv', 'w') as f:
+                f.write(csv_data)
+            
+            print('✅ Step 2: Data fetch completed successfully')
+        except Exception as e:
+            print(f'❌ Step 2: Data fetch failed: {str(e)}')
+            sys.exit(1)
+        "
+        echo "⏰ Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    
+    - name: Step 3 - Process and Store Data
+      id: process_data
+      timeout-minutes: 30
+      run: |
+        echo "💾 Starting Step 3: Processing and storing data..."
+        echo "⏰ Started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        
+        # Read data size from previous step
+        DATA_SIZE=$(cat data_size.txt)
+        echo "📊 Processing $DATA_SIZE characters of CSV data"
+        
+        python -c "
+        import sys
+        sys.path.append('.')
+        from main import process_csv_data
+        import logging
+        
+        # Configure logging for GitHub Actions
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        
+        try:
+            print('💾 Processing CSV data and inserting into database...')
+            
+            # Read CSV data from file
+            with open('tori_data.csv', 'r') as f:
+                csv_content = f.read()
+            
+            process_csv_data(csv_content)
+            print('✅ Step 3: Data processing completed successfully')
+        except Exception as e:
+            print(f'❌ Step 3: Data processing failed: {str(e)}')
+            sys.exit(1)
+        "
+        echo "⏰ Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    
+    - name: Cleanup temporary files
+      if: always()  # Run cleanup even if previous steps failed
+      run: |
+        echo "🧹 Cleaning up temporary files..."
+        rm -f data_size.txt tori_data.csv
+        echo "✅ Cleanup completed"
+    
+    - name: Job Summary
+      if: always()  # Always run summary
+      run: |
+        echo "📋 TORI Data Processing Job Summary"
+        echo "=================================="
+        echo "⏰ Job completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        echo "🔐 OAuth Authentication: $([[ "${{ steps.oauth_auth.outcome }}" == "success" ]] && echo "✅ Success" || echo "❌ Failed")"
+        echo "📊 Data Fetch: $([[ "${{ steps.fetch_data.outcome }}" == "success" ]] && echo "✅ Success" || echo "❌ Failed")"
+        echo "💾 Data Processing: $([[ "${{ steps.process_data.outcome }}" == "success" ]] && echo "✅ Success" || echo "❌ Failed")"
+        echo "🔗 Connection Test: $([[ "${{ steps.connection_test.outcome }}" == "success" ]] && echo "✅ Success" || echo "⚠️ Skipped/Failed")"
