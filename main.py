@@ -189,9 +189,23 @@ def process_csv_data(csv_content):
         if not all([sql_server, sql_database, sql_username, sql_password]):
             raise ValueError("Azure SQL Database environment variables not set (AZURE_SQL_SERVER, AZURE_SQL_DATABASE, AZURE_SQL_USERNAME, AZURE_SQL_PASSWORD)")
         
+        # Find available SQL Server ODBC driver
+        available_drivers = [x for x in pyodbc.drivers() if 'SQL Server' in x]
+        if not available_drivers:
+            raise ValueError("No SQL Server ODBC drivers found")
+        
+        # Use the first available driver (prefer ODBC Driver 17)
+        driver = available_drivers[0]
+        if 'ODBC Driver 17 for SQL Server' in available_drivers:
+            driver = 'ODBC Driver 17 for SQL Server'
+        elif 'ODBC Driver 18 for SQL Server' in available_drivers:
+            driver = 'ODBC Driver 18 for SQL Server'
+        
+        logging.info(f"Using ODBC driver: {driver}")
+        
         # Construct Azure SQL Database connection string
         connection_string = (
-            f"Driver={{ODBC Driver 17 for SQL Server}};"
+            f"Driver={{{driver}}};"
             f"Server={sql_server};"
             f"Database={sql_database};"
             f"Uid={sql_username};"
@@ -227,7 +241,7 @@ def process_csv_data(csv_content):
             for _, row in df.iterrows():
                 # Convert each value to string, handling NaN/None values
                 converted_row = tuple(
-                    str(value) if pd.notna(value) else None
+                    str(value) if pd.notna(value) and value is not None else None
                     for value in row
                 )
                 data_to_insert.append(converted_row)
@@ -241,7 +255,6 @@ def process_csv_data(csv_content):
     except Exception as e:
         logging.error(f"Error processing CSV data: {str(e)}")
         raise
-
 
 def main():
     """

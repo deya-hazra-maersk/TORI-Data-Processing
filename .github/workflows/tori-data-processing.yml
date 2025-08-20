@@ -2,8 +2,10 @@ name: TORI Data Processing
 
 on:
   schedule:
+    # Runs daily at 8:00 AM UTC
+    # Note: GitHub Actions cron may have delays of 5-15 minutes
     - cron: '0 8 * * *'
-  workflow_dispatch: 
+  workflow_dispatch: # Allows manual trigger for testing
 
 env:
   PYTHON_VERSION: '3.12'  
@@ -28,6 +30,25 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
         cache: 'pip'  
+    
+    - name: Install Microsoft ODBC Driver for SQL Server
+      run: |
+        echo "🔧 Installing Microsoft ODBC Driver 17 for SQL Server..."
+        
+        # Add Microsoft repository
+        curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+        curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
+        
+        # Update package list
+        sudo apt-get update
+        
+        # Install ODBC driver and tools
+        sudo ACCEPT_EULA=Y apt-get install -y msodbcsql17 unixodbc-dev
+        
+        # Verify installation
+        odbcinst -q -d -n "ODBC Driver 17 for SQL Server"
+        
+        echo "✅ ODBC Driver installed successfully"
     
     - name: Install dependencies
       run: |
@@ -75,15 +96,19 @@ jobs:
         except Exception as e:
             print(f'⚠️ TORI API endpoint test failed: {e}')
         
-        # Test SQL Server connectivity
-        print('🔗 Testing Azure SQL Database connectivity...')
+        # Verify ODBC drivers available
+        print('🔗 Testing ODBC driver availability...')
         try:
-            connection_string = f\"Driver={{ODBC Driver 17 for SQL Server}};Server={os.getenv('AZURE_SQL_SERVER')};Database={os.getenv('AZURE_SQL_DATABASE')};Uid={os.getenv('AZURE_SQL_USERNAME')};Pwd={os.getenv('AZURE_SQL_PASSWORD')};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=10;\"
+            drivers = [x for x in pyodbc.drivers() if 'SQL Server' in x]
+            print(f'✅ Available SQL Server drivers: {drivers}')
+            
+            # Test SQL Server connectivity
+            connection_string = f\"Driver={{{drivers[0] if drivers else 'ODBC Driver 17 for SQL Server'}}};Server={os.getenv('AZURE_SQL_SERVER')};Database={os.getenv('AZURE_SQL_DATABASE')};Uid={os.getenv('AZURE_SQL_USERNAME')};Pwd={os.getenv('AZURE_SQL_PASSWORD')};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=10;\"
             conn = pyodbc.connect(connection_string)
             conn.close()
             print('✅ Azure SQL Database connection successful')
         except Exception as e:
-            print(f'⚠️ Azure SQL Database connection test failed: {e}')
+            print(f'⚠️ Database connectivity test failed: {e}')
         "
         echo "⏰ Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     
@@ -145,7 +170,7 @@ jobs:
                 f.write(str(data_size))
             
             # Save CSV data for processing step
-            with open('tori_data.csv', 'w') as f:
+            with open('tori_data.csv', 'w', encoding='utf-8') as f:
                 f.write(csv_data)
             
             print('✅ Step 2: Data fetch completed successfully')
@@ -182,7 +207,7 @@ jobs:
             print('💾 Processing CSV data and inserting into database...')
             
             # Read CSV data from file
-            with open('tori_data.csv', 'r') as f:
+            with open('tori_data.csv', 'r', encoding='utf-8') as f:
                 csv_content = f.read()
             
             process_csv_data(csv_content)
